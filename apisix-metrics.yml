@@ -1,0 +1,39 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: apisix-metrics
+  namespace: apisix
+  labels:
+    app.kubernetes.io/name: apisix
+    app.kubernetes.io/instance: apisix
+spec:
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 9091
+  selector:
+    app.kubernetes.io/name: apisix
+    app.kubernetes.io/instance: apisix
+  type: ClusterIP
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: apisix
+  namespace: apisix
+  labels:
+    app.kubernetes.io/name: apisix
+    release: kube-prometheus-stack-1729396267
+spec:
+  jobLabel: app.kubernetes.io/name
+  endpoints:
+    - path: /apisix/prometheus/metrics
+      port: http
+      interval: 10s
+  namespaceSelector:
+    matchNames:
+      - apisix
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: apisix

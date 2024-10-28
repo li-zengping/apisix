@@ -1,0 +1,192 @@
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: apisix
+  namespace: apisix
+  labels:
+    app.kubernetes.io/instance: apisix
+    app.kubernetes.io/name: apisix
+    app.kubernetes.io/version: 2.10.0
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: apisix
+      app.kubernetes.io/name: apisix
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app.kubernetes.io/instance: apisix
+        app.kubernetes.io/name: apisix
+    spec:
+      volumes:
+        - name: apisix-config
+          configMap:
+            name: apisix
+            defaultMode: 420
+      initContainers:
+        - name: wait-etcd
+          image: busybox:1.28
+          #如果官方镜像获取不到可以拉取国内同步的镜像registry.cn-hangzhou.aliyuncs.com/k8s_study_rfb/busybox:1.28-x86
+          command:
+            - sh
+            - '-c'
+            - >-
+              until nc -z 10.0.0.20 2379; do echo
+              waiting for etcd `date`; sleep 2; done;
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: IfNotPresent
+      containers:
+        - name: apisix
+          image: apache/apisix:3.5.0-debian
+          #如果官方镜像获取不到可以拉取国内同步的镜像registry.cn-hangzhou.aliyuncs.com/k8s_study_rfb/apisix:3.9.0-debian-x86
+          ports:
+            - name: http
+              containerPort: 9080
+              protocol: TCP
+            - name: tls
+              containerPort: 9443
+              protocol: TCP
+            - name: admin
+              containerPort: 9180
+              protocol: TCP
+          resources: {}
+          volumeMounts:
+            - name: apisix-config
+              mountPath: /usr/local/apisix/conf/config.yaml
+              subPath: config.yaml
+          readinessProbe:
+            tcpSocket:
+              port: 9080
+            initialDelaySeconds: 10
+            timeoutSeconds: 1
+            periodSeconds: 10
+            successThreshold: 1
+            failureThreshold: 6
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - '-c'
+                  - sleep 30
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          imagePullPolicy: IfNotPresent
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+      dnsPolicy: ClusterFirst
+      securityContext: {}
+      schedulerName: default-scheduler
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+      maxSurge: 25%
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: apisix
+  namespace: apisix
+data:
+  config.yaml: >-
+    apisix:
+      node_listen: 9080              # APISIX listening port
+      enable_ipv6: false
+      enable_control: true
+      control:
+        ip: "0.0.0.0"
+        port: 9092
+    deployment:
+      admin:
+        allow_admin:               # https://nginx.org/en/docs/http/ngx_http_access_module.html#allow
+          - 0.0.0.0/0              # We need to restrict ip access rules for security. 0.0.0.0/0 is for test.
+    
+        admin_key:
+          - name: "admin"
+            key: edd1c9f034335f136f87ad84b625c8f1
+            role: admin                 # admin: manage all configuration data
+    
+          - name: "viewer"
+            key: 4054f7cf07e344346cd3f287985e76a2
+            role: viewer
+    
+      etcd:
+        host:                           # it's possible to define multiple etcd hosts addresses of the same etcd cluster.
+          - "http://10.0.0.20:2379"
+        prefix: "/apisix"               # apisix configurations prefix
+        timeout: 30                     # 30 seconds
+    
+    plugin_attr:
+      prometheus:
+        export_addr:
+          ip: "0.0.0.0"
+          port: 9091
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: apisix-admin
+  namespace: apisix
+  labels:
+    app.kubernetes.io/instance: apisix
+    app.kubernetes.io/name: apisix
+    app.kubernetes.io/version: 2.10.0
+spec:
+  ports:
+    - name: apisix-admin
+      protocol: TCP
+      port: 9180
+      targetPort: 9180
+  selector:
+    app.kubernetes.io/instance: apisix
+    app.kubernetes.io/name: apisix
+  type: ClusterIP
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: apisix-gateway
+  namespace: apisix
+  labels:
+    app.kubernetes.io/instance: apisix
+    app.kubernetes.io/name: apisix
+    app.kubernetes.io/version: 2.10.0
+spec:
+  ports:
+    - name: apisix-gateway
+      protocol: TCP
+      port: 80
+      targetPort: 9080
+  selector:
+    app.kubernetes.io/instance: apisix
+    app.kubernetes.io/name: apisix
+  type: ClusterIP
+  sessionAffinity: None
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: apisix-gateway-ingress
+  namespace: apisix
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: apisix.gw.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: apisix-gateway
+            port:
+              number: 80
